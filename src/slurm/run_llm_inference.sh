@@ -24,4 +24,4 @@ my_job_header
 cd $HOME/bcc
 
 # Do NOT forget the --nv or no GPU will be accessible
-apptainer exec --nv /gpfs1/cont/ollama/full-ollama-0.5.7.sif ./slurm/run_requests.sh $1
+apptainer exec --nv /gpfs1/cont/ollama/full-ollama-0.5.7.sif ./slurm/run_requests.sh $1 $2

@@ -8,7 +8,7 @@ echo "Pulling llama3.2 model"
 ollama pull llama3.2
 
 # input and output files
-labelfile=labels/$SLURM_JOBID.json
+labelfile=output/preds/$2/$SLURM_JOBID.json
 reqfile=$1
 
 echo "labelfile: $labelfile"

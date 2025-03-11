@@ -32,15 +32,17 @@ class CustomThread(threading.Thread):
         super().join()
         return self._return
 
-def load_data():
+def load_data(labeltype:str):
     """
     Load labeled and unlabeled data from CSV files.
     """
     try:
-        labeled = pd.read_csv("data/labeled-data.csv")
-        unlabeled = pd.read_csv("data/unlabeled-data.csv")
-        logger.info("Data loaded successfully.")
-        return labeled, unlabeled
+        if labeltype == "behavior":
+            data = pd.read_csv("data/text/behavior_labels.csv")
+        elif labeltype == "stance":
+            data = pd.read_csv("data/text/stance_labels.csv")
+        return data
+            
     except FileNotFoundError as e:
         logger.error(f"Error loading data: {e}")
         raise
@@ -48,65 +50,56 @@ def load_data():
         logger.error(f"Unexpected error: {e}")
         raise
 
-def generate_prompt(labeled: pd.DataFrame, unlabeled: pd.DataFrame, unique_labels=None) -> List[str]:
-    """
-    Generate few-shot prompts for text classification.
-
-    For each unlabeled text, this function creates a prompt that:
-      - Clearly instructs the LLM to act as an expert text classifier.
-      - Provides a list of categories.
-      - Shows several examples (sampled from labeled data) with text and corresponding labels.
-      - Presents the target text within explicit start and end tokens.
-      - Instructs the LLM to return only the predicted label.
-    """
-    if unique_labels is None:
-        unique_labels = {}
+def generate_prompt(data: pd.DataFrame, persona, datatype) -> List[str]:
+    unique_labels = None  # Initialize unique_labels
 
     logger.info("Starting to generate few-shot prompts.")
     try:
         # Use only the 'text' and 'labels' columns from labeled data
-        text_with_labels = labeled[['text', 'labels']].copy()
+        text_with_labels = data[['text', 'label']].copy()
 
-        # Filter out rows with commas in labels to avoid ambiguity
-        text_with_labels = text_with_labels[
-            text_with_labels['labels'].str.contains(',') == False
-        ]
+      
+       
+        # Exclude rows with the label "Not about vaccines" if needed (not shown)
 
-        # Clean labels by removing unwanted characters
-        text_with_labels['labels'] = text_with_labels['labels'].str.replace(r'\[|\]|"', '', regex=True)
-
-        # Exclude rows with the label "Not about vaccines"
-        text_with_labels = text_with_labels[text_with_labels['labels'] != 'Not about vaccines']
-
-        if not unique_labels:
-            unique_labels = sorted(text_with_labels['labels'].unique())
+        if datatype == "stance":
+            unique_labels = ['Vaccinated/planning to vaccinate', 'No information about the author’s vaccine intentions', 'Not vaccinated/not planning to vaccinate']
+        elif datatype == "behavior":
+            unique_labels = ['Vaccination schedule, spacing, or timing', 'Vaccines are mentioned positively' ,'Protection from disease' ,'About vaccines but does not fit any of the previous categories' ,'Vaccines are mentioned negatively' ,'Seeking information about vaccines', 'Adverse effects']
 
         # Group labeled data by label for sampling examples
-        grouped = text_with_labels.groupby('labels')
+        grouped = text_with_labels.groupby('label')
 
         prompts = []
 
-        for text in unlabeled['text']:
+        for text in data['text']:
             # Clean the unlabeled text by removing newlines and quotes
             clean_text = text.replace("\n", " ").replace('"', '')
 
             # For each label group, randomly sample up to 3 examples (or fewer if not available)
             sample_docs = grouped.apply(lambda x: x.sample(min(len(x), 3))).reset_index(drop=True)
 
+            # make sure samples do not equal text
+            sample_docs = sample_docs[sample_docs['text'] != text]
+
             # Construct example string: each example is delineated by markers
             examples = " ".join(
-                f"<ExampleStart> {row['text'].replace('\n', ' ').replace('\"', '')} : {row['labels']} <ExampleEnd>"
-                for _, row in sample_docs.iterrows()
+                f'<ExampleStart> {row["clean_text"]} : {unique_labels[row["label"]]} <ExampleEnd>'
+                for _, row in sample_docs.assign(
+                    clean_text=sample_docs["text"]
+                    .str.replace("\n", " ", regex=False)
+                    .str.replace("\\", "", regex=False)
+                ).iterrows()
             )
 
             # Build the prompt with clear instructions and boundaries.
             prompt = (
-                f"You are an expert text classifier. Your job is to look at the following labeld examples and then label an unlabeled document.\n"
+                f"You are a {persona}. Your job is to look at the following labeled examples and then label an unlabeled document.\n"
                 f"Available categories: {', '.join(unique_labels)}.\n\n"
                 f"Here are some examples for guidance:\n{examples}\n\n"
                 f"Now, classify the following text between the tokens <<<START>>> and <<<END>>>.\n"
                 f"<<<START>>>\n{clean_text}\n<<<END>>>\n\n"
-                f"Return only the single label (from the available categories) without any additional text or formatting."
+                f"Return only a single label (from the available categories) without any additional text or formatting."
             )
             prompts.append(prompt)
 
@@ -173,35 +166,39 @@ def main():
       - Future improvements include containerizing Ollama, applying Bennett's patches to the shell script,
         and running multiple Ollama instances in parallel on specified ports.
     """
-    try:
-        logger.info("Starting main pipeline.")
-        labeled, unlabeled = load_data()
+    for datatype in ["behavior", "stance"]:
+        for persona in ["mom", "immunologist", "doctor", "teacher", "robot"]:
+            try:
+                logger.info("Starting main pipeline.")
+                data = load_data("stance")
 
-        # Shuffle labeled data to randomize examples
-        labeled = labeled.sample(frac=1)
+                batch_size = 100
+                num_batches = math.ceil(len(data) / batch_size)
 
-        batch_size = 100
-        num_batches = math.ceil(len(unlabeled) / batch_size)
+                for i in range(num_batches):
+                    start_idx = i * batch_size
+                    end_idx = start_idx + batch_size
+                    unlabeled_batch = data.iloc[start_idx:end_idx]
 
-        for i in range(num_batches):
-            start_idx = i * batch_size
-            end_idx = start_idx + batch_size
-            unlabeled_batch = unlabeled.iloc[start_idx:end_idx]
+                    # Run few-shot prompt generation in a separate thread
+                    thread = CustomThread(target=generate_prompt, args=(data, persona,datatype))
+                    thread.start()
+                    few_shot_prompts = thread.join()
 
-            # Run few-shot prompt generation in a separate thread
-            thread = CustomThread(target=generate_prompt, args=(labeled, unlabeled_batch))
-            thread.start()
-            few_shot_prompts = thread.join()
+                    # Generate Ollama requests from the prompts
+                    ollama_requests = generate_ollama_requests(few_shot_prompts)
 
-            # Generate Ollama requests from the prompts
-            ollama_requests = generate_ollama_requests(few_shot_prompts)
+                    import os
+                    if not os.path.exists("data/requests/stance"):
+                        os.makedirs("data/requests/stance")
+                    if not os.path.exists("data/requests/behavior"):
+                        os.makedirs("data/requests/behavior")
+                    # Write the requests to file, one per line in JSON format
+                    write_requests_to_file(ollama_requests, f"data/requests/{datatype}/requests_{persona}.json")
 
-            # Write the requests to file, one per line in JSON format
-            write_requests_to_file(ollama_requests)
-
-        logger.info("Pipeline completed successfully.")
-    except Exception as e:
-        logger.error(f"Pipeline failed: {e}")
+                logger.info("Pipeline completed successfully.")
+            except Exception as e:
+                logger.error(f"Pipeline failed: {e}")
 
 if __name__ == "__main__":
     main()

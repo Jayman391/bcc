@@ -1,0 +1,25 @@
+[project]
+name = "bcc"
+version = "0.1.0"
+description = ""
+authors = [
+    {name = "Jason Lobell",email = "jasonlobell123@gmail.com"}
+]
+readme = "README.md"
+requires-python = ">=3.11, <3.12"
+dependencies = [
+    "pandas (>=2.2.3,<3.0.0)",
+    "numpy (>=2.2.3,<3.0.0)",
+    "spacy (>=3.8.4,<4.0.0)",
+    "textacy (>=0.13.0,<0.14.0)",
+    "vadersentiment (>=3.3.2,<4.0.0)",
+    "transformers (>=4.49.0,<5.0.0)",
+    "sentence-transformers (>=3.4.1,<4.0.0)",
+    "umap-learn (>=0.5.7,<0.6.0)",
+    "hdbscan (>=0.8.40,<0.9.0)"
+]
+
+
+[build-system]
+requires = ["poetry-core>=2.0.0,<3.0.0"]
+build-backend = "poetry.core.masonry.api"
